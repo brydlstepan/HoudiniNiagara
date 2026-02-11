@@ -64,27 +64,38 @@ bool UHoudiniPointCacheExporterBase::ExportBinary(UObject* Object, const TCHAR* 
 		return false;
 	}
 
+	// Handle uncompressed data (for files >2GB that skip compression)
 	if (PointCache->RawDataCompressionMethod.IsEqual(NAME_None))
 	{
-		return false;
+		// Data is uncompressed, serialize directly
+		const void* BulkDataPtr = PointCache->RawDataCompressed.LockReadOnly();
+		int64 BulkDataSize = PointCache->RawDataCompressed.GetBulkDataSize();
+		
+		Ar.Serialize(const_cast<void*>(BulkDataPtr), BulkDataSize);
+		PointCache->RawDataCompressed.Unlock();
+		return true;
 	}
 
 	// Uncompress data before serialization
-	const uint32 UncompressedSize = PointCache->RawDataUncompressedSize;
+	const int64 UncompressedSize = PointCache->RawDataUncompressedSize;
 
-	int32 CompressedSize = PointCache->RawDataCompressed.Num();
-	TArray<uint8> UncompressedData;
+	int64 CompressedSize = PointCache->RawDataCompressed.GetBulkDataSize();
+	TArray<uint8, FDefaultAllocator64> UncompressedData;
 	UncompressedData.SetNumUninitialized(UncompressedSize);
 	
+	const void* BulkDataPtr = PointCache->RawDataCompressed.LockReadOnly();
+
 	if (FCompression::UncompressMemory(
 		PointCache->RawDataCompressionMethod,
 		UncompressedData.GetData(),
 		UncompressedSize,
-		PointCache->RawDataCompressed.GetData(),
-		PointCache->RawDataCompressed.Num()))
+		BulkDataPtr,
+		CompressedSize))
 	{
 		Ar.Serialize(UncompressedData.GetData(), UncompressedSize);
 	}
+	
+	PointCache->RawDataCompressed.Unlock();
 
 	return true;
 }

@@ -56,23 +56,85 @@ FHoudiniPointCacheLoaderBJSON::FHoudiniPointCacheLoaderBJSON(const FString& InFi
 }
 
 #if WITH_EDITOR
-bool FHoudiniPointCacheLoaderBJSON::LoadToAsset(UHoudiniPointCache *InAsset)
+
+// Helper RAII struct to handle BulkData locking/unlocking
+struct FBulkDataScopeLock
+{
+    FBulkDataScopeLock(FByteBulkData& InBulkData)
+        : BulkData(InBulkData)
+    {
+        DataPtr = BulkData.LockReadOnly();
+        DataSize = BulkData.GetBulkDataSize();
+    }
+    
+    ~FBulkDataScopeLock()
+    {
+        BulkData.Unlock();
+    }
+    
+    const void* GetData() const { return DataPtr; }
+    int64 GetSize() const { return DataSize; }
+    
+    FByteBulkData& BulkData;
+    const void* DataPtr;
+    int64 DataSize;
+};
+
+bool FHoudiniPointCacheLoaderBJSON::LoadToAsset(UHoudiniPointCache *InAsset, bool bSkipFileRead)
 {
     const FString& InFilePath = GetFilePath();
 	FScopedLoadingState ScopedLoadingState(*InFilePath);
 
-    // Reset the reader and load the whole file into raw buffer
-    if (!LoadRawPointCacheData(InAsset, InFilePath))
+    TArray<uint8, FDefaultAllocator64> UncompressedData;
+    const uint8* DataPtr = nullptr;
+    int64 DataSize = 0;
+    
+    // Scoped lock for direct access if uncompressed
+    TUniquePtr<FBulkDataScopeLock> BulkDataLock;
+
+    if (bSkipFileRead)
     {
-        UE_LOG(LogHoudiniNiagara, Warning, TEXT("Failed to read file '%s' error."), *InFilePath);
-        return false;
+        // We are reloading from persistent asset
+        if (InAsset->RawDataCompressionMethod != NAME_None)
+        {
+             // Must uncompress to temp buffer
+             if (!GetUncompressedRawData(InAsset, UncompressedData)) 
+             {
+                 UE_LOG(LogHoudiniNiagara, Error, TEXT("Failed to uncompress raw data for point cache re-parse."));
+                 return false;
+             }
+             DataPtr = UncompressedData.GetData();
+             DataSize = UncompressedData.Num();
+        }
+        else
+        {
+             // Already uncompressed in bulk data. Lock it.
+             BulkDataLock = MakeUnique<FBulkDataScopeLock>(InAsset->RawDataCompressed);
+             DataPtr = (const uint8*)BulkDataLock->GetData();
+             DataSize = BulkDataLock->GetSize();
+        }
+    }
+    else
+    {
+        // Normal load path - fresh import
+        // Reset the reader and load the whole file into raw buffer
+        if (!LoadRawPointCacheData(InAsset, InFilePath))
+        {
+            UE_LOG(LogHoudiniNiagara, Warning, TEXT("Failed to read file '%s' error."), *InFilePath);
+            return false;
+        }
+        
+        // At this point RawDataCompressed is uncompressed (just loaded from file)
+        BulkDataLock = MakeUnique<FBulkDataScopeLock>(InAsset->RawDataCompressed);
+        DataPtr = (const uint8*)BulkDataLock->GetData();
+        DataSize = BulkDataLock->GetSize();
     }
 
     // Pre-allocate and reset buffer
     Buffer.SetNumZeroed(1024);
     
-    // Construct reader to read from the (currently) uncompressed data buffer in memory.
-    Reader = MakeUnique<FMemoryReader>(InAsset->RawDataCompressed);
+    FMemoryView DataView(DataPtr, DataSize);
+    Reader = MakeUnique<FMemoryReaderView>(DataView);
 	if (!Reader)
 	{
 	    UE_LOG(LogHoudiniNiagara, Warning, TEXT("Failed to reader data from raw data buffer."));
@@ -251,7 +313,11 @@ bool FHoudiniPointCacheLoaderBJSON::LoadToAsset(UHoudiniPointCache *InAsset)
 
     // We have finished ingesting the data.
     // Finalize data loading by compressing raw data.
-    CompressRawData(InAsset);
+    // Only compress if we loaded fresh data (not from PostLoad)
+    if (!bSkipFileRead)
+    {
+        CompressRawData(InAsset);
+    }
 
     return true;
 }

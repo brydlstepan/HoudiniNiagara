@@ -1505,5 +1505,47 @@ void FHoudiniPointCacheResource::ReleaseRHI()
 	LifeValuesGPUBuffer.Release();
 	PointTypesGPUBuffer.Release();
 	PointValueIndexesGPUBuffer.Release();
-}	
+}
+
+
+
+void UHoudiniPointCache::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+#if WITH_EDITORONLY_DATA
+	// FByteBulkData is not a UPROPERTY, so we must manually serialize it.
+	// This writes the payload to a .ubulk sidecar file.
+	RawDataCompressed.Serialize(Ar, this);
+#endif
+}
+
+#if WITH_EDITOR
+void UHoudiniPointCache::PostLoad()
+{
+	Super::PostLoad();
+
+	// If we have raw data but no parsed data (because it was transient), rebuild it.
+	if (HasRawData() && FloatSampleData.Num() == 0)
+	{
+	    // Re-parse from RawDataCompressed
+        const FString FileExt = FPaths::GetExtension(FileName).ToUpper();
+        
+        TSharedPtr<FHoudiniPointCacheLoader> Loader;
+		if (FileExt == TEXT("CSV"))
+			Loader = FHoudiniPointCacheLoaderCSV::Create<FHoudiniPointCacheLoaderCSV>(FileName);
+		else if (FileExt == TEXT("JSON"))
+			Loader = FHoudiniPointCacheLoaderJSON::Create<FHoudiniPointCacheLoaderJSON>(FileName);
+		else if (FileExt == TEXT("HBJSON"))
+			Loader = FHoudiniPointCacheLoaderBJSON::Create<FHoudiniPointCacheLoaderBJSON>(FileName);
+
+        if (Loader.IsValid())
+        {
+            // Load from memory (skip file read)
+            Loader->LoadToAsset(this, true); 
+        }
+	}
+}
+#endif
+
 #undef LOCTEXT_NAMESPACE

@@ -42,16 +42,29 @@ FHoudiniPointCacheLoaderJSON::FHoudiniPointCacheLoaderJSON(const FString& InFile
 }
 
 #if WITH_EDITOR
-bool FHoudiniPointCacheLoaderJSON::LoadToAsset(UHoudiniPointCache *InAsset)
+bool FHoudiniPointCacheLoaderJSON::LoadToAsset(UHoudiniPointCache *InAsset, bool bSkipFileRead)
 {
     const FString& InFilePath = GetFilePath();
 	FScopedLoadingState ScopedLoadingState(*InFilePath);
 
     FString JsonString;
-    if (!FFileHelper::LoadFileToString(JsonString, *InFilePath))
+
+    if (bSkipFileRead)
     {
-        UE_LOG(LogHoudiniNiagara, Warning, TEXT("Failed to read file '%s'."), *InFilePath);
-	    return false;
+        TArray<uint8, FDefaultAllocator64> UncompressedData;
+        if (!GetUncompressedRawData(InAsset, UncompressedData))
+        {
+             return false;
+        }
+        FFileHelper::BufferToString(JsonString, UncompressedData.GetData(), UncompressedData.Num());
+    }
+    else
+    {
+        if (!FFileHelper::LoadFileToString(JsonString, *InFilePath))
+        {
+            UE_LOG(LogHoudiniNiagara, Warning, TEXT("Failed to read file '%s'."), *InFilePath);
+	        return false;
+        }
     }
 
     const TSharedRef<TJsonReader<>>& Reader = TJsonReaderFactory<>::Create(JsonString);
@@ -172,15 +185,18 @@ bool FHoudiniPointCacheLoaderJSON::LoadToAsset(UHoudiniPointCache *InAsset)
         FrameStartSampleIndex += NumPointsInFrame;
     }
 
-    // Load uncompressed raw data into asset.
-    // TODO: Rebuild JSON string from this buffer to avoid loading data twice. 
-	if (!LoadRawPointCacheData(InAsset, *GetFilePath()))
-	{
-		return false;
-	}
+    if (!bSkipFileRead)
+    {
+        // Load uncompressed raw data into asset.
+        // TODO: Rebuild JSON string from this buffer to avoid loading data twice. 
+	    if (!LoadRawPointCacheData(InAsset, *GetFilePath()))
+	    {
+		    return false;
+	    }
 
-    // Finalize load by compressing raw data.
-	CompressRawData(InAsset);
+        // Finalize load by compressing raw data.
+	    CompressRawData(InAsset);
+    }
 
     return true;
 }

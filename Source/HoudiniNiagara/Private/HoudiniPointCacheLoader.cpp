@@ -96,7 +96,25 @@ FHoudiniPointCacheLoader::~FHoudiniPointCacheLoader()
 bool FHoudiniPointCacheLoader::LoadRawPointCacheData(UHoudiniPointCache* InAsset, const FString& InFilePath) const
 {
     InAsset->Modify();
-    return FFileHelper::LoadFileToArray( InAsset->RawDataCompressed, *InFilePath );
+    
+    // Load file into temporary array first
+    TArray<uint8, FDefaultAllocator64> TempData;
+    if (!FFileHelper::LoadFileToArray(TempData, *InFilePath))
+    {
+        return false;
+    }
+
+    // Copy to FByteBulkData
+    InAsset->RawDataCompressed.Lock(LOCK_READ_WRITE);
+    void* Dest = InAsset->RawDataCompressed.Realloc(TempData.Num());
+    FMemory::Memcpy(Dest, TempData.GetData(), TempData.Num());
+    InAsset->RawDataCompressed.Unlock();
+
+    // Force the payload to be stored in a separate file (or at end of file) to avoid package size limits
+    // Also enable 64-bit size/offset to support files > 2GB
+    InAsset->RawDataCompressed.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload | BULKDATA_Size64Bit);
+
+    return true;
 }
 #endif
 
@@ -105,30 +123,101 @@ bool FHoudiniPointCacheLoader::LoadRawPointCacheData(UHoudiniPointCache* InAsset
 void FHoudiniPointCacheLoader::CompressRawData(UHoudiniPointCache* InAsset) const
 {
     constexpr ECompressionFlags CompressFlags = COMPRESS_BiasMemory;
-    const uint32 UncompressedSize = InAsset->RawDataCompressed.Num();
+    const int64 UncompressedSize = InAsset->RawDataCompressed.GetBulkDataSize();
+
+    // Skip compression for files larger than 2GB due to internal FCompression limitations
+    // Even though the API accepts int64, there are internal int32 checks that will fail
+    if (UncompressedSize > INT32_MAX)
+    {
+        UE_LOG(LogHoudiniNiagara, Warning, TEXT("Skipping compression for large file (%lld bytes). File will be stored uncompressed."), UncompressedSize);
+        InAsset->RawDataUncompressedSize = UncompressedSize;
+        InAsset->RawDataCompressionMethod = NAME_None;
+        InAsset->RawDataFormatID = GetFormatID();
+        return;
+    }
 
     const FName CompressionName = NAME_Oodle;
-	int32 CompressedSize = FCompression::CompressMemoryBound(CompressionName, UncompressedSize, CompressFlags);
-	TArray<uint8> CompressedData;
+	int64 CompressedSize = FCompression::CompressMemoryBound(CompressionName, UncompressedSize, CompressFlags);
+	TArray<uint8, FDefaultAllocator64> CompressedData;
 
     CompressedData.SetNum(CompressedSize);
+
+    // Lock BulkData for reading
+    const void* Src = InAsset->RawDataCompressed.LockReadOnly();
 
 	if (FCompression::CompressMemory(
 	    CompressionName,
 	    CompressedData.GetData(),
 	    CompressedSize,
-	    InAsset->RawDataCompressed.GetData(),
+	    Src,
 	    UncompressedSize,
 	    CompressFlags))
 	{
+        // Unlock read access
+        InAsset->RawDataCompressed.Unlock();
+
 		CompressedData.SetNum(CompressedSize);
 		CompressedData.Shrink();
 	    
-	    InAsset->RawDataCompressed = MoveTemp(CompressedData);
+        // Write compressed data back to BulkData
+        InAsset->RawDataCompressed.Lock(LOCK_READ_WRITE);
+        void* Dest = InAsset->RawDataCompressed.Realloc(CompressedData.Num());
+        FMemory::Memcpy(Dest, CompressedData.GetData(), CompressedData.Num());
+        InAsset->RawDataCompressed.Unlock();
+
+        // consistently force separate storage and 64-bit size
+        InAsset->RawDataCompressed.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload | BULKDATA_Size64Bit);
+
 	    InAsset->RawDataCompressionMethod = CompressionName;
 	}
+    else
+    {
+        // Unlock read access if compression failed
+        InAsset->RawDataCompressed.Unlock();
+    }
     
     InAsset->RawDataUncompressedSize = UncompressedSize;
     InAsset->RawDataFormatID = GetFormatID();
+}
+#endif
+
+#if WITH_EDITOR
+bool FHoudiniPointCacheLoader::GetUncompressedRawData(const UHoudiniPointCache* InAsset, TArray<uint8, FDefaultAllocator64>& OutData) const
+{
+    if (!InAsset || !InAsset->HasRawData())
+        return false;
+
+    // Handle uncompressed data (for files >2GB that skip compression)
+    if (InAsset->RawDataCompressionMethod.IsEqual(NAME_None))
+    {
+        // Data is uncompressed, copy directly
+        const void* BulkDataPtr = InAsset->RawDataCompressed.LockReadOnly();
+        int64 BulkDataSize = InAsset->RawDataCompressed.GetBulkDataSize();
+        
+        OutData.SetNumUninitialized(BulkDataSize);
+        FMemory::Memcpy(OutData.GetData(), BulkDataPtr, BulkDataSize);
+        
+        InAsset->RawDataCompressed.Unlock();
+        return true;
+    }
+
+    // Uncompress data
+    const int64 UncompressedSize = InAsset->RawDataUncompressedSize;
+    int64 CompressedSize = InAsset->RawDataCompressed.GetBulkDataSize();
+    
+    OutData.SetNumUninitialized(UncompressedSize);
+    
+    const void* BulkDataPtr = InAsset->RawDataCompressed.LockReadOnly();
+
+    bool bSuccess = FCompression::UncompressMemory(
+        InAsset->RawDataCompressionMethod,
+        OutData.GetData(),
+        UncompressedSize,
+        BulkDataPtr,
+        CompressedSize);
+    
+    InAsset->RawDataCompressed.Unlock();
+    
+    return bSuccess;
 }
 #endif

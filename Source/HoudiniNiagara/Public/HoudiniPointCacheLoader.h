@@ -106,8 +106,9 @@ class FHoudiniPointCacheLoader
         /**
          * Load the data from FilePath to InAsset.
          * Returns false on failure.
+         * @param bSkipFileRead If true, assumes RawDataCompressed is already populated and skips reading from file.
          */
-    	virtual bool LoadToAsset(UHoudiniPointCache *InAsset) = 0;
+    	virtual bool LoadToAsset(UHoudiniPointCache *InAsset, bool bSkipFileRead = false) = 0;
 
         virtual FName GetFormatID() const { return NAME_None; };
 
@@ -119,6 +120,7 @@ class FHoudiniPointCacheLoader
 #if WITH_EDITOR
         bool LoadRawPointCacheData(UHoudiniPointCache* InAsset, const FString& InFilePath) const;
         void CompressRawData(UHoudiniPointCache* InAsset) const;
+        bool GetUncompressedRawData(const UHoudiniPointCache* InAsset, TArray<uint8, FDefaultAllocator64>& OutData) const;
 #endif
 
     private:

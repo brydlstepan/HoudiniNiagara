@@ -48,7 +48,7 @@ class FHoudiniPointCacheLoaderBJSON : public FHoudiniPointCacheLoaderJSONBase
         /** Load the data from FilePath into a UHoudiniPointCache asset.
          * @return false on errors, true otherwise.
          */
-        virtual bool LoadToAsset(UHoudiniPointCache *InAsset) override;
+        virtual bool LoadToAsset(UHoudiniPointCache *InAsset, bool bSkipFileRead = false) override;
 
         virtual FName GetFormatID() const override { return "HBJSON"; };
 #endif

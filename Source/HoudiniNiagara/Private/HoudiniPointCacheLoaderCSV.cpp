@@ -40,25 +40,54 @@ FHoudiniPointCacheLoaderCSV::FHoudiniPointCacheLoaderCSV(const FString& InFilePa
 }
 
 #if WITH_EDITOR
-bool FHoudiniPointCacheLoaderCSV::LoadToAsset(UHoudiniPointCache *InAsset)
+bool FHoudiniPointCacheLoaderCSV::LoadToAsset(UHoudiniPointCache *InAsset, bool bSkipFileRead)
 {
     // Parse the file to a string array
     TArray<FString> StringArray;
-    if (!FFileHelper::LoadFileToStringArray(StringArray, *GetFilePath()))
-		return false;
+
+    if (bSkipFileRead)
+    {
+        TArray<uint8, FDefaultAllocator64> UncompressedData;
+        if (!GetUncompressedRawData(InAsset, UncompressedData))
+        {
+             return false;
+        }
+        
+        // Convert to string
+        FString FileContent;
+        // Ensure null terminator if using BufferToString? 
+        // BufferToString implementation handles byte conversion. 
+        // We need to trust it matches LoadFileToString behavior.
+        FFileHelper::BufferToString(FileContent, UncompressedData.GetData(), UncompressedData.Num());
+        
+        FileContent.ParseIntoArray(StringArray, TEXT("\n"), true);
+        // Handle \r removal if needed, ParseIntoArray might leave \r
+        for (FString& Str : StringArray)
+        {
+            Str.ReplaceInline(TEXT("\r"), TEXT(""));
+        }
+    }
+    else
+    {
+        if (!FFileHelper::LoadFileToStringArray(StringArray, *GetFilePath()))
+		    return false;
+    }
 	
     if (!UpdateFromStringArray(InAsset, StringArray))
     {
 	    return false;
     }
 
-    // Load uncompressed raw data into asset.
-	if (!LoadRawPointCacheData(InAsset, *GetFilePath()))
-	{
-		return false;
-	}
-	// Finalize load by compressing raw data.
-	CompressRawData(InAsset);
+    if (!bSkipFileRead)
+    {
+        // Load uncompressed raw data into asset.
+	    if (!LoadRawPointCacheData(InAsset, *GetFilePath()))
+	    {
+		    return false;
+	    }
+	    // Finalize load by compressing raw data.
+	    CompressRawData(InAsset);
+    }
 
 	return true;
 }

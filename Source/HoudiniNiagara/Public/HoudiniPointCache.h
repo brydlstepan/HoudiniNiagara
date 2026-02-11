@@ -23,6 +23,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Array.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "RHI.h"
 #include "CoreMinimal.h"
@@ -39,6 +40,7 @@
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
+#include "Serialization/BulkData.h"
 
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
 #include "UObject/AssetRegistryTagsContext.h"
@@ -390,8 +392,9 @@ class HOUDININIAGARA_API UHoudiniPointCache : public UObject
 	TObjectPtr<class UAssetImportData> AssetImportData;
 
 	// Raw data of the source file so that we can export it again.
-	UPROPERTY()
-	TArray<uint8> RawDataCompressed;
+	// Using FByteBulkData to support large files without int32 package size limitations
+	// This stores data in a separate .ubulk file for large assets
+	FByteBulkData RawDataCompressed;
 
 	// Compression scheme used to compress raw 
 	UPROPERTY( VisibleAnywhere, Category = "Houdini Point Cache Properties" )
@@ -399,7 +402,7 @@ class HOUDININIAGARA_API UHoudiniPointCache : public UObject
 
 	// Size of data when uncompressed
 	UPROPERTY( VisibleAnywhere, Category = "Houdini Point Cache Properties" )
-	uint32 RawDataUncompressedSize;
+	int64 RawDataUncompressedSize;
 
 	// Compression scheme used to compress raw 
 	UPROPERTY( VisibleAnywhere, Category = "Houdini Point Cache Properties" )
@@ -407,10 +410,11 @@ class HOUDININIAGARA_API UHoudiniPointCache : public UObject
 #endif
 
 #if WITH_EDITOR
-	bool HasRawData() const { return RawDataCompressed.Num() > 0; };
+	bool HasRawData() const { return RawDataCompressed.GetBulkDataSize() > 0; };
 
 	virtual void PostInitProperties() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent & PropertyChangedEvent) override;
+    virtual void PostLoad() override;
 #endif
 
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
@@ -420,6 +424,9 @@ class HOUDININIAGARA_API UHoudiniPointCache : public UObject
 	virtual void GetAssetRegistryTags(TArray< FAssetRegistryTag > & OutTags) const override;
 	
 	void BeginDestroy() override;
+
+	// Custom serialization to handle FByteBulkData (not a UPROPERTY, requires manual serialization)
+	virtual void Serialize(FArchive& Ar) override;
 
 	// Data Accessors, const and non-const versions
 	TArray<float>& GetFloatSampleData() { return FloatSampleData; }
@@ -472,23 +479,23 @@ class HOUDININIAGARA_API UHoudiniPointCache : public UObject
 	*/
 
 	// Array containing all the sample data converted to floats
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray<float> FloatSampleData;
 	
 	// Array containing the spawn times for each point in the point cache
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray<float> SpawnTimes;
 
 	// Array containing all the life values for each point in the point cache
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray<float> LifeValues;
 
 	// Array containing all the type values for each point in the point cache
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray<int32> PointTypes;
 
 	// Array containing the column indexes of the special attributes
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray<int32> SpecialAttributeIndexes;
 
 	/*
@@ -498,7 +505,7 @@ class HOUDININIAGARA_API UHoudiniPointCache : public UObject
 	*/
 
 	// Sample indexes for each point
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TArray< FPointIndexes > PointValueIndexes;
 
 	/** For CSV source files, whether to use a custom title row. */
